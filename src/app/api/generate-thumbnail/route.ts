@@ -1,9 +1,62 @@
 import { NextRequest, NextResponse } from 'next/server';
 import ZAI from 'z-ai-web-dev-sdk';
+import { writeFile, mkdir } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 // Configure runtime for Vercel (allows up to 60 seconds)
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
+
+// Configuration from environment variables
+interface ZAIConfig {
+  baseUrl: string;
+  apiKey: string;
+  chatId?: string;
+  userId?: string;
+}
+
+function getZAIConfig(): ZAIConfig {
+  const baseUrl = process.env.ZAI_BASE_URL || process.env.NEXT_PUBLIC_ZAI_BASE_URL;
+  const apiKey = process.env.ZAI_API_KEY || process.env.NEXT_PUBLIC_ZAI_API_KEY;
+  const chatId = process.env.ZAI_CHAT_ID || process.env.NEXT_PUBLIC_ZAI_CHAT_ID;
+  const userId = process.env.ZAI_USER_ID || process.env.NEXT_PUBLIC_ZAI_USER_ID;
+
+  if (!baseUrl || !apiKey) {
+    throw new Error('Z.ai configuration missing. Please set ZAI_BASE_URL and ZAI_API_KEY environment variables.');
+  }
+
+  return {
+    baseUrl,
+    apiKey,
+    chatId,
+    userId,
+  };
+}
+
+// Write config file for ZAI SDK
+async function writeConfigFile(): Promise<void> {
+  const config = getZAIConfig();
+  const configContent = JSON.stringify(config, null, 2);
+  
+  // Try multiple locations for the config file
+  const configLocations = [
+    join(process.cwd(), '.z-ai-config'),  // Current working directory
+    join(tmpdir(), '.z-ai-config'),        // System temp directory
+  ];
+
+  for (const configPath of configLocations) {
+    try {
+      await writeFile(configPath, configContent, 'utf-8');
+      console.log(`Z.ai config written to: ${configPath}`);
+      return;
+    } catch (error) {
+      console.log(`Failed to write config to ${configPath}, trying next location...`);
+    }
+  }
+  
+  throw new Error('Failed to write Z.ai configuration file');
+}
 
 interface GenerateRequest {
   title: string;
@@ -69,7 +122,6 @@ function buildPrompt(data: GenerateRequest): string {
     isPro, 
     background, 
     colors, 
-    blendMode, 
     font, 
     fontSize, 
     format, 
@@ -286,7 +338,10 @@ export async function POST(request: NextRequest) {
     const prompt = buildPrompt(data);
     console.log('Generated prompt:', prompt.substring(0, 200) + '...');
 
-    // Initialize ZAI with retry logic
+    // Write config file for Z.ai SDK (needed for serverless environments like Vercel)
+    await writeConfigFile();
+
+    // Generate image with retry logic
     const result = await retryWithBackoff(async () => {
       const zai = await ZAI.create();
       
@@ -326,6 +381,8 @@ export async function POST(request: NextRequest) {
         errorMessage = 'Service temporarily unavailable. Please try again in a moment.';
       } else if (errorMessage.includes('rate limit')) {
         errorMessage = 'Too many requests. Please wait a moment and try again.';
+      } else if (errorMessage.includes('configuration missing') || errorMessage.includes('config')) {
+        errorMessage = 'Server configuration error. Please contact support.';
       }
     }
     
