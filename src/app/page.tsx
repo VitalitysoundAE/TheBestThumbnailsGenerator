@@ -415,6 +415,7 @@ function ThumbnailGenerator() {
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [generatedPrompt, setGeneratedPrompt] = useState<string>('');
   const [promptExpanded, setPromptExpanded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Character limits
   const maxTitleChars = isPro ? 50 : 30;
@@ -448,8 +449,12 @@ function ThumbnailGenerator() {
     if (!title.trim() || !selectedStyle) return;
 
     setIsGenerating(true);
+    setError(null);
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+
       const response = await fetch('/api/generate-thumbnail', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -471,18 +476,34 @@ function ThumbnailGenerator() {
             ...characterDetails,
           } : undefined,
         }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       const data = await response.json();
 
-      if (data.success) {
+      if (data.success && data.image) {
         setGeneratedImage(data.image);
         setGeneratedPrompt(data.prompt);
+        setError(null);
       } else {
-        throw new Error(data.error || 'Generation failed');
+        throw new Error(data.error || 'Generation failed. Please try again.');
       }
     } catch (error) {
       console.error('Error generating thumbnail:', error);
+      
+      let errorMessage = 'Failed to generate thumbnail. Please try again.';
+      
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          errorMessage = 'Request timed out. Please try again.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
+      setError(errorMessage);
     } finally {
       setIsGenerating(false);
     }
@@ -1151,6 +1172,29 @@ function ThumbnailGenerator() {
                 </>
               )}
             </Button>
+
+            {/* Error Message */}
+            {error && (
+              <Card className="bg-red-900/20 border-red-500/30 backdrop-blur-xl">
+                <CardContent className="pt-4 pb-4">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm text-red-300 font-medium">{t('generate.error')}</p>
+                      <p className="text-xs text-red-400/80 mt-1">{error}</p>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setError(null)}
+                      className="ml-auto text-red-400 hover:text-red-300 hover:bg-red-500/10 p-1 h-auto"
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </div>
 
           {/* Right Column - Preview */}

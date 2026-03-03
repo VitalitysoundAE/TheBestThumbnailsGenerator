@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import ZAI from 'z-ai-web-dev-sdk';
 
+// Configure runtime for Vercel (allows up to 60 seconds)
+export const maxDuration = 60;
+export const dynamic = 'force-dynamic';
+
 interface GenerateRequest {
   title: string;
   description?: string;
@@ -27,6 +31,36 @@ interface GenerateRequest {
   };
 }
 
+// Retry utility with exponential backoff
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelay: number = 2000
+): Promise<T> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      
+      // Don't retry on client errors (4xx)
+      if (lastError.message.includes('400') || lastError.message.includes('401') || lastError.message.includes('403')) {
+        throw lastError;
+      }
+      
+      if (attempt < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.log(`Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  throw lastError;
+}
+
 function buildPrompt(data: GenerateRequest): string {
   const { 
     title, 
@@ -34,7 +68,6 @@ function buildPrompt(data: GenerateRequest): string {
     style, 
     isPro, 
     background, 
-    backgroundCategory, 
     colors, 
     blendMode, 
     font, 
@@ -86,93 +119,83 @@ function buildPrompt(data: GenerateRequest): string {
     // Background
     if (background) {
       const backgroundDescriptions: Record<string, string> = {
-        // Textures
-        'marble': 'elegant marble texture background with natural veining',
-        'wood': 'warm wooden texture with natural grain patterns',
-        'concrete': 'industrial concrete texture with subtle imperfections',
-        'fabric': 'soft fabric texture with subtle folds',
-        'paper': 'textured paper background with subtle grain',
-        'metal': 'metallic texture with reflective surfaces',
-        'brick': 'exposed brick wall texture',
-        'leather': 'luxurious leather texture background',
-        'sand': 'natural sand texture with subtle variations',
-        'stone': 'natural stone texture with organic patterns',
-        // Realistic
-        'sky': 'beautiful sky with clouds, natural lighting',
-        'forest': 'lush forest background with trees and nature',
-        'city': 'urban cityscape with buildings and skyline',
-        'mountain': 'majestic mountain landscape view',
-        'ocean': 'expansive ocean view with waves',
-        'sunset': 'gorgeous sunset with warm orange and pink sky',
-        'night': 'night sky with stars and moon',
-        'studio': 'professional studio lighting setup',
-        'abstract-nature': 'abstract nature photography',
-        'urban': 'urban street photography background',
-        // Illustrated
-        'geometric': 'geometric patterns illustration, modern shapes',
-        'waves': 'stylized waves illustration, fluid design',
-        'particles': 'floating particles illustration, dynamic motion',
-        'lines': 'abstract lines illustration, contemporary art',
-        'dots': 'polka dots pattern illustration, playful design',
-        'gradients': 'smooth gradient illustration, color transitions',
-        'shapes': 'abstract shapes illustration, modern composition',
-        'splatter': 'paint splatter illustration, artistic chaos',
-        'low-poly': 'low poly geometric illustration, modern design',
-        'vector': 'clean vector illustration, professional graphics',
-        // Colors
-        'solid-black': 'pure solid black background',
-        'solid-white': 'pure solid white background',
-        'gradient-purple': 'purple gradient background',
-        'gradient-blue': 'blue gradient background',
-        'gradient-pink': 'pink gradient background',
-        'gradient-green': 'green gradient background',
-        'gradient-orange': 'orange gradient background',
-        'gradient-teal': 'teal gradient background',
-        'gradient-rainbow': 'rainbow gradient background',
-        // Abstract
-        'liquid': 'liquid abstract background, fluid motion',
-        'smoke': 'swirling smoke abstract background',
-        'fractal': 'intricate fractal pattern background',
-        'plasma': 'plasma energy abstract background',
-        'crystal': 'crystalline abstract background',
-        'nebula': 'space nebula abstract background',
-        'fire': 'abstract fire and flames background',
-        'electric': 'electric energy abstract background',
-        'organic': 'organic flowing abstract shapes',
-        'geometric-abstract': 'geometric abstract composition',
-        // Viral
-        'gaming-setup': 'gaming setup background with RGB lighting',
-        'money-stack': 'money stacks background, wealth theme',
-        'explosion-effect': 'explosion effect background, high impact',
-        'fire-background': 'dramatic fire background',
-        'tech-circuit': 'technology circuit board background',
-        'neon-city': 'neon lit city background',
-        'space-stars': 'space with stars and galaxies',
-        'lightning': 'dramatic lightning background',
-        'confetti': 'celebration confetti background',
-        'crown-gold': 'luxurious gold and crown background',
+        'marble': 'elegant marble texture background',
+        'wood': 'warm wooden texture background',
+        'concrete': 'industrial concrete texture',
+        'fabric': 'soft fabric texture',
+        'paper': 'textured paper background',
+        'metal': 'metallic texture',
+        'brick': 'exposed brick wall',
+        'leather': 'leather texture background',
+        'sand': 'natural sand texture',
+        'stone': 'natural stone texture',
+        'sky': 'beautiful sky with clouds',
+        'forest': 'lush forest background',
+        'city': 'urban cityscape',
+        'mountain': 'mountain landscape view',
+        'ocean': 'ocean view with waves',
+        'sunset': 'gorgeous sunset sky',
+        'night': 'night sky with stars',
+        'studio': 'professional studio lighting',
+        'abstract-nature': 'abstract nature background',
+        'urban': 'urban street background',
+        'geometric': 'geometric patterns',
+        'waves': 'stylized waves',
+        'particles': 'floating particles',
+        'lines': 'abstract lines',
+        'dots': 'polka dots pattern',
+        'gradients': 'smooth gradient',
+        'shapes': 'abstract shapes',
+        'splatter': 'paint splatter',
+        'low-poly': 'low poly geometric',
+        'vector': 'clean vector graphics',
+        'solid-black': 'solid black background',
+        'solid-white': 'solid white background',
+        'gradient-purple': 'purple gradient',
+        'gradient-blue': 'blue gradient',
+        'gradient-pink': 'pink gradient',
+        'gradient-green': 'green gradient',
+        'gradient-orange': 'orange gradient',
+        'gradient-teal': 'teal gradient',
+        'gradient-rainbow': 'rainbow gradient',
+        'liquid': 'liquid abstract background',
+        'smoke': 'smoke abstract background',
+        'fractal': 'fractal pattern',
+        'plasma': 'plasma energy',
+        'crystal': 'crystalline background',
+        'nebula': 'space nebula',
+        'fire': 'fire and flames',
+        'electric': 'electric energy',
+        'organic': 'organic shapes',
+        'geometric-abstract': 'geometric abstract',
+        'gaming-setup': 'gaming setup with RGB',
+        'money-stack': 'money stacks',
+        'explosion-effect': 'explosion effect',
+        'fire-background': 'fire background',
+        'tech-circuit': 'circuit board',
+        'neon-city': 'neon city',
+        'space-stars': 'space with stars',
+        'lightning': 'lightning background',
+        'confetti': 'celebration confetti',
+        'crown-gold': 'gold crown',
       };
       prompt += `Background: ${backgroundDescriptions[background] || background}. `;
     }
 
     // Colors
     if (colors && colors.length > 0) {
-      prompt += `Color scheme featuring ${colors.join(', ')}`;
-      if (blendMode && blendMode !== 'normal') {
-        prompt += ` with ${blendMode} blend effect`;
-      }
-      prompt += '. ';
+      prompt += `Color scheme: ${colors.join(', ')}. `;
     }
 
     // Font
     if (font) {
       const fontDescriptions: Record<string, string> = {
-        impact: 'bold Impact-style typography, heavy and impactful',
-        bebas: 'Bebas Neue style tall bold letters, modern display font',
-        oswald: 'Oswald condensed font style, strong and readable',
-        montserrat: 'Montserrat modern sans-serif style, clean typography',
-        roboto: 'Roboto Condensed style, professional and versatile',
-        playfair: 'Playfair Display elegant serif style, sophisticated',
+        impact: 'bold Impact-style typography',
+        bebas: 'Bebas Neue bold letters',
+        oswald: 'Oswald condensed font',
+        montserrat: 'Montserrat modern font',
+        roboto: 'Roboto font',
+        playfair: 'Playfair elegant font',
       };
       prompt += `Typography: ${fontDescriptions[font] || font}. `;
     }
@@ -180,31 +203,31 @@ function buildPrompt(data: GenerateRequest): string {
     // Font Size
     if (fontSize) {
       const sizeDescriptions: Record<string, string> = {
-        small: 'modest sized text that doesn\'t overwhelm',
-        medium: 'balanced medium sized prominent text',
-        large: 'extra large bold text that dominates the thumbnail',
+        small: 'modest sized text',
+        medium: 'medium sized text',
+        large: 'large bold text',
       };
       prompt += `Text size: ${sizeDescriptions[fontSize]}. `;
     }
 
-    // Format with configuration
+    // Format
     if (format && formatConfig) {
       const formatDescriptions: Record<string, (config: Record<string, string>) => string> = {
-        reaction: (c) => `reaction face with ${c.expression || 'surprised'} expression positioned ${c.position || 'right'}, ${c.size || 'medium'} size`,
-        comparison: (c) => `${c.direction || 'vertical'} split screen comparison with ${c.ratio || '50/50'} ratio and ${c.style || 'clean'} divider`,
-        numbered: (c) => `numbered list with number ${c.count || '1'} in ${c.style || 'circles'} style`,
-        arrow: (c) => `${c.color || 'red'} arrow pointing ${c.direction || 'right'}, ${c.size || 'medium'} size at ${c.position || 'center'}${c.target ? ` pointing to ${c.target}` : ''}`,
-        circle: (c) => `${c.color || 'red'} circle highlight, ${c.style || 'solid'} style, ${c.size || 'medium'} size${c.target ? ` around ${c.target}` : ''}`,
-        split: (c) => `${c.direction || 'vertical'} split screen with ${c.ratio || '50/50'} ratio`,
-        zoom: (c) => `zoom magnifying effect at ${c.position || 'center'}, ${c.size || 'medium'} magnifier`,
-        question: (c) => `${c.style || 'classic'} question mark in ${c.color || 'yellow'}, ${c.size || 'medium'} size`,
-        shocked: (c) => `shocked face expression positioned ${c.position || 'right'}, ${c.size || 'medium'} size`,
-        money: (c) => `money theme with ${c.currency || '$'} currency in ${c.style || 'stacks'} style`,
-        warning: (c) => `${c.type || 'danger'} warning sign in ${c.color || 'yellow'} positioned ${c.position || 'top'}`,
-        secret: (c) => `secret/mystery element in ${c.style || 'mystery'} style`,
-        trending: (c) => `trending graph pointing ${c.direction || 'up'} in ${c.color || 'green'}`,
-        new: (c) => `NEW badge in ${c.color || 'red'} at ${c.position || 'top-right'}`,
-        giveaway: (c) => `giveaway gift theme in ${c.style || 'gift-box'} style`,
+        reaction: (c) => `reaction face ${c.expression || 'surprised'} at ${c.position || 'right'}`,
+        comparison: (c) => `${c.direction || 'vertical'} split comparison`,
+        numbered: (c) => `number ${c.count || '1'} in ${c.style || 'circles'}`,
+        arrow: (c) => `arrow pointing ${c.direction || 'right'}`,
+        circle: (c) => `circle highlight`,
+        split: (c) => `${c.direction || 'vertical'} split screen`,
+        zoom: (c) => `zoom effect`,
+        question: (c) => `question mark`,
+        shocked: (c) => `shocked face`,
+        money: (c) => `money theme`,
+        warning: (c) => `warning sign`,
+        secret: (c) => `mystery element`,
+        trending: (c) => `trending graph`,
+        new: (c) => `NEW badge`,
+        giveaway: (c) => `giveaway theme`,
       };
       
       if (formatDescriptions[format]) {
@@ -214,45 +237,35 @@ function buildPrompt(data: GenerateRequest): string {
 
     // Character
     if (character && character.type) {
-      const charParts: string[] = [];
-      
-      // Character type
       const typeDescriptions: Record<string, string> = {
-        'human-male': 'realistic human male character',
-        'human-female': 'realistic human female character',
-        'cartoon-male': 'cartoon style male character',
-        'cartoon-female': 'cartoon style female character',
-        'anime-male': 'anime style male character',
-        'anime-female': 'anime style female character',
-        'animal-dog': 'cute dog character',
-        'animal-cat': 'cute cat character',
-        'animal-other': 'cute animal character',
-        'child': 'child character',
-        'young-adult': 'young adult character',
-        'adult': 'adult character',
-        'senior': 'senior elderly character',
-        'robot': 'futuristic robot character',
-        'alien': 'alien sci-fi character',
-        'fantasy': 'fantasy magical character',
+        'human-male': 'human male',
+        'human-female': 'human female',
+        'cartoon-male': 'cartoon male',
+        'cartoon-female': 'cartoon female',
+        'anime-male': 'anime male',
+        'anime-female': 'anime female',
+        'animal-dog': 'dog',
+        'animal-cat': 'cat',
+        'animal-other': 'animal',
+        'child': 'child',
+        'young-adult': 'young adult',
+        'adult': 'adult',
+        'senior': 'senior',
+        'robot': 'robot',
+        'alien': 'alien',
+        'fantasy': 'fantasy character',
       };
-      charParts.push(typeDescriptions[character.type] || character.type);
       
-      if (character.pose) charParts.push(`${character.pose} pose`);
-      if (character.expression) charParts.push(`${character.expression} expression`);
-      if (character.outfit) charParts.push(`wearing ${character.outfit} outfit`);
-      if (character.accessories && character.accessories !== 'none') {
-        charParts.push(`with ${character.accessories}`);
-      }
-      if (character.hairStyle) charParts.push(`${character.hairStyle} hair`);
-      if (character.hairColor) charParts.push(`${character.hairColor} hair color`);
+      let charDesc = typeDescriptions[character.type] || character.type;
+      if (character.expression) charDesc += ` with ${character.expression} expression`;
+      if (character.pose) charDesc += ` in ${character.pose} pose`;
       
-      prompt += `Include a ${charParts.join(', ')}. `;
+      prompt += `Include a ${charDesc}. `;
     }
   }
 
-  // Add YouTube thumbnail specific requirements
-  prompt += `The image must be eye-catching, high quality, suitable for YouTube thumbnail (16:9 aspect ratio), with clear visual hierarchy and professional composition. `;
-  prompt += `IMPORTANT: The title text "${title}" must be prominently displayed and easily readable. Do not add any other text or words to the image. No watermarks.`;
+  // Final instructions
+  prompt += `Create an eye-catching YouTube thumbnail (16:9 aspect ratio). The text "${title}" must be clearly visible and prominent. High quality, professional composition. No watermarks.`;
 
   return prompt;
 }
@@ -264,39 +277,60 @@ export async function POST(request: NextRequest) {
     // Validate required fields
     if (!data.title || !data.style) {
       return NextResponse.json(
-        { error: 'Title and style are required' },
+        { success: false, error: 'Title and style are required' },
         { status: 400 }
       );
     }
 
     // Build the prompt
     const prompt = buildPrompt(data);
+    console.log('Generated prompt:', prompt.substring(0, 200) + '...');
 
-    // Initialize ZAI
-    const zai = await ZAI.create();
+    // Initialize ZAI with retry logic
+    const result = await retryWithBackoff(async () => {
+      const zai = await ZAI.create();
+      
+      const response = await zai.images.generations.create({
+        prompt,
+        size: '1344x768', // YouTube thumbnail optimized size
+      });
 
-    // Generate the image
-    const response = await zai.images.generations.create({
-      prompt,
-      size: '1344x768', // YouTube thumbnail optimized size
-    });
+      const imageBase64 = response.data[0]?.base64;
 
-    // Get the base64 image data
-    const imageBase64 = response.data[0]?.base64;
+      if (!imageBase64) {
+        throw new Error('No image data returned from API');
+      }
 
-    if (!imageBase64) {
-      throw new Error('No image data returned from API');
-    }
+      return imageBase64;
+    }, 3, 2000);
 
     return NextResponse.json({
       success: true,
-      image: `data:image/png;base64,${imageBase64}`,
+      image: `data:image/png;base64,${result}`,
       prompt,
     });
+
   } catch (error) {
     console.error('Error generating thumbnail:', error);
+    
+    // Provide more detailed error message
+    let errorMessage = 'Failed to generate thumbnail';
+    
+    if (error instanceof Error) {
+      errorMessage = error.message;
+      
+      // Handle common errors with user-friendly messages
+      if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT')) {
+        errorMessage = 'Request timed out. Please try again.';
+      } else if (errorMessage.includes('502') || errorMessage.includes('503')) {
+        errorMessage = 'Service temporarily unavailable. Please try again in a moment.';
+      } else if (errorMessage.includes('rate limit')) {
+        errorMessage = 'Too many requests. Please wait a moment and try again.';
+      }
+    }
+    
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to generate thumbnail' },
+      { success: false, error: errorMessage },
       { status: 500 }
     );
   }
