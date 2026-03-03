@@ -1,62 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import ZAI from 'z-ai-web-dev-sdk';
-import { writeFile, mkdir } from 'fs/promises';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { generateImageWithFallback, checkProvidersStatus } from '@/lib/image-providers';
 
 // Configure runtime for Vercel (allows up to 60 seconds)
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
-
-// Configuration from environment variables
-interface ZAIConfig {
-  baseUrl: string;
-  apiKey: string;
-  chatId?: string;
-  userId?: string;
-}
-
-function getZAIConfig(): ZAIConfig {
-  const baseUrl = process.env.ZAI_BASE_URL || process.env.NEXT_PUBLIC_ZAI_BASE_URL;
-  const apiKey = process.env.ZAI_API_KEY || process.env.NEXT_PUBLIC_ZAI_API_KEY;
-  const chatId = process.env.ZAI_CHAT_ID || process.env.NEXT_PUBLIC_ZAI_CHAT_ID;
-  const userId = process.env.ZAI_USER_ID || process.env.NEXT_PUBLIC_ZAI_USER_ID;
-
-  if (!baseUrl || !apiKey) {
-    throw new Error('Z.ai configuration missing. Please set ZAI_BASE_URL and ZAI_API_KEY environment variables.');
-  }
-
-  return {
-    baseUrl,
-    apiKey,
-    chatId,
-    userId,
-  };
-}
-
-// Write config file for ZAI SDK
-async function writeConfigFile(): Promise<void> {
-  const config = getZAIConfig();
-  const configContent = JSON.stringify(config, null, 2);
-  
-  // Try multiple locations for the config file
-  const configLocations = [
-    join(process.cwd(), '.z-ai-config'),  // Current working directory
-    join(tmpdir(), '.z-ai-config'),        // System temp directory
-  ];
-
-  for (const configPath of configLocations) {
-    try {
-      await writeFile(configPath, configContent, 'utf-8');
-      console.log(`Z.ai config written to: ${configPath}`);
-      return;
-    } catch (error) {
-      console.log(`Failed to write config to ${configPath}, trying next location...`);
-    }
-  }
-  
-  throw new Error('Failed to write Z.ai configuration file');
-}
 
 interface GenerateRequest {
   title: string;
@@ -82,36 +29,6 @@ interface GenerateRequest {
     hairStyle?: string;
     hairColor?: string;
   };
-}
-
-// Retry utility with exponential backoff
-async function retryWithBackoff<T>(
-  fn: () => Promise<T>,
-  maxRetries: number = 3,
-  baseDelay: number = 2000
-): Promise<T> {
-  let lastError: Error | null = null;
-  
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      
-      // Don't retry on client errors (4xx)
-      if (lastError.message.includes('400') || lastError.message.includes('401') || lastError.message.includes('403')) {
-        throw lastError;
-      }
-      
-      if (attempt < maxRetries - 1) {
-        const delay = baseDelay * Math.pow(2, attempt);
-        console.log(`Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-  }
-  
-  throw lastError;
 }
 
 function buildPrompt(data: GenerateRequest): string {
@@ -189,18 +106,9 @@ function buildPrompt(data: GenerateRequest): string {
         'sunset': 'gorgeous sunset sky',
         'night': 'night sky with stars',
         'studio': 'professional studio lighting',
-        'abstract-nature': 'abstract nature background',
-        'urban': 'urban street background',
         'geometric': 'geometric patterns',
         'waves': 'stylized waves',
         'particles': 'floating particles',
-        'lines': 'abstract lines',
-        'dots': 'polka dots pattern',
-        'gradients': 'smooth gradient',
-        'shapes': 'abstract shapes',
-        'splatter': 'paint splatter',
-        'low-poly': 'low poly geometric',
-        'vector': 'clean vector graphics',
         'solid-black': 'solid black background',
         'solid-white': 'solid white background',
         'gradient-purple': 'purple gradient',
@@ -208,28 +116,10 @@ function buildPrompt(data: GenerateRequest): string {
         'gradient-pink': 'pink gradient',
         'gradient-green': 'green gradient',
         'gradient-orange': 'orange gradient',
-        'gradient-teal': 'teal gradient',
-        'gradient-rainbow': 'rainbow gradient',
-        'liquid': 'liquid abstract background',
-        'smoke': 'smoke abstract background',
-        'fractal': 'fractal pattern',
-        'plasma': 'plasma energy',
-        'crystal': 'crystalline background',
-        'nebula': 'space nebula',
-        'fire': 'fire and flames',
-        'electric': 'electric energy',
-        'organic': 'organic shapes',
-        'geometric-abstract': 'geometric abstract',
         'gaming-setup': 'gaming setup with RGB',
         'money-stack': 'money stacks',
-        'explosion-effect': 'explosion effect',
-        'fire-background': 'fire background',
-        'tech-circuit': 'circuit board',
         'neon-city': 'neon city',
         'space-stars': 'space with stars',
-        'lightning': 'lightning background',
-        'confetti': 'celebration confetti',
-        'crown-gold': 'gold crown',
       };
       prompt += `Background: ${backgroundDescriptions[background] || background}. `;
     }
@@ -260,31 +150,6 @@ function buildPrompt(data: GenerateRequest): string {
         large: 'large bold text',
       };
       prompt += `Text size: ${sizeDescriptions[fontSize]}. `;
-    }
-
-    // Format
-    if (format && formatConfig) {
-      const formatDescriptions: Record<string, (config: Record<string, string>) => string> = {
-        reaction: (c) => `reaction face ${c.expression || 'surprised'} at ${c.position || 'right'}`,
-        comparison: (c) => `${c.direction || 'vertical'} split comparison`,
-        numbered: (c) => `number ${c.count || '1'} in ${c.style || 'circles'}`,
-        arrow: (c) => `arrow pointing ${c.direction || 'right'}`,
-        circle: (c) => `circle highlight`,
-        split: (c) => `${c.direction || 'vertical'} split screen`,
-        zoom: (c) => `zoom effect`,
-        question: (c) => `question mark`,
-        shocked: (c) => `shocked face`,
-        money: (c) => `money theme`,
-        warning: (c) => `warning sign`,
-        secret: (c) => `mystery element`,
-        trending: (c) => `trending graph`,
-        new: (c) => `NEW badge`,
-        giveaway: (c) => `giveaway theme`,
-      };
-      
-      if (formatDescriptions[format]) {
-        prompt += `Visual element: ${formatDescriptions[format](formatConfig)}. `;
-      }
     }
 
     // Character
@@ -338,52 +203,23 @@ export async function POST(request: NextRequest) {
     const prompt = buildPrompt(data);
     console.log('Generated prompt:', prompt.substring(0, 200) + '...');
 
-    // Write config file for Z.ai SDK (needed for serverless environments like Vercel)
-    await writeConfigFile();
-
-    // Generate image with retry logic
-    const result = await retryWithBackoff(async () => {
-      const zai = await ZAI.create();
-      
-      const response = await zai.images.generations.create({
-        prompt,
-        size: '1344x768', // YouTube thumbnail optimized size
-      });
-
-      const imageBase64 = response.data[0]?.base64;
-
-      if (!imageBase64) {
-        throw new Error('No image data returned from API');
-      }
-
-      return imageBase64;
-    }, 3, 2000);
+    // Use hybrid generation with automatic fallback
+    const result = await generateImageWithFallback(prompt, data.title);
 
     return NextResponse.json({
-      success: true,
-      image: `data:image/png;base64,${result}`,
+      success: result.success,
+      image: result.image,
       prompt,
+      provider: result.provider,
     });
 
   } catch (error) {
     console.error('Error generating thumbnail:', error);
     
-    // Provide more detailed error message
     let errorMessage = 'Failed to generate thumbnail';
     
     if (error instanceof Error) {
       errorMessage = error.message;
-      
-      // Handle common errors with user-friendly messages
-      if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT')) {
-        errorMessage = 'Request timed out. Please try again.';
-      } else if (errorMessage.includes('502') || errorMessage.includes('503')) {
-        errorMessage = 'Service temporarily unavailable. Please try again in a moment.';
-      } else if (errorMessage.includes('rate limit')) {
-        errorMessage = 'Too many requests. Please wait a moment and try again.';
-      } else if (errorMessage.includes('configuration missing') || errorMessage.includes('config')) {
-        errorMessage = 'Server configuration error. Please contact support.';
-      }
     }
     
     return NextResponse.json(
@@ -391,4 +227,10 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+// Endpoint to check provider status
+export async function GET() {
+  const status = await checkProvidersStatus();
+  return NextResponse.json({ providers: status });
 }

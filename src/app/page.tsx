@@ -3,7 +3,9 @@
 import { useState, useCallback } from 'react';
 import { LanguageProvider, useLanguage } from '@/hooks/useLanguage';
 import { LanguageSelector } from '@/components/LanguageSelector';
+import { CookieConsent, CookieSettingsButton } from '@/components/ads/CookieConsent';
 import { Button } from '@/components/ui/button';
+import Link from 'next/link';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
@@ -1328,13 +1330,31 @@ function ThumbnailGenerator() {
           : 'border-white/10 bg-white/5'
       }`}>
         <div className="max-w-7xl mx-auto px-4 py-6">
-          <div className="flex items-center justify-center gap-2 text-white/50 text-sm">
-            <span>{t('footer.madeWith')}</span>
-            <span className="text-red-400">❤️</span>
-            <span>{t('footer.by')}</span>
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-2 text-white/50 text-sm">
+              <span>{t('footer.madeWith')}</span>
+              <span className="text-red-400">❤️</span>
+              <span>{t('footer.by')}</span>
+            </div>
+            
+            <div className="flex items-center gap-4 text-sm text-white/50">
+              <Link href="/privacy" className="hover:text-white transition-colors">
+                Privacy Policy
+              </Link>
+              <Link href="/terms" className="hover:text-white transition-colors">
+                Terms of Service
+              </Link>
+              <Link href="/cookies" className="hover:text-white transition-colors">
+                Cookie Policy
+              </Link>
+              <CookieSettingsButton />
+            </div>
           </div>
         </div>
       </footer>
+
+      {/* Cookie Consent Banner */}
+      <CookieConsent />
     </div>
   );
 }
