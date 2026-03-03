@@ -1,0 +1,59 @@
+# ===========================================
+# Thumbnail Generator - Docker Compose
+# ===========================================
+
+version: '3.8'
+
+services:
+  thumbnail-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: thumbnail-generator
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - NEXT_TELEMETRY_DISABLED=1
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - thumbnail-network
+
+  # Optional: Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: thumbnail-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - thumbnail-generator
+    networks:
+      - thumbnail-network
+
+networks:
+  thumbnail-network:
+    driver: bridge
+
+# Optional: Add volume for persistent data
+# volumes:
+#   thumbnail-data:
