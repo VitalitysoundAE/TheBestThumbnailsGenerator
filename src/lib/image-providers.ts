@@ -7,29 +7,52 @@
 export interface ImageProvider {
   name: string;
   enabled: boolean;
-  priority: number; // Lower = higher priority
+  priority: number;
   generate: (prompt: string) => Promise<string | null>;
-  checkStatus?: () => Promise<boolean>;
+  hasConfig: () => boolean;
+}
+
+// ===========================================
+// Check which providers are configured
+// ===========================================
+
+function hasHuggingFaceConfig(): boolean {
+  return !!(process.env.HUGGING_FACE_API_KEY || process.env.NEXT_PUBLIC_HUGGING_FACE_API_KEY);
+}
+
+function hasCloudflareConfig(): boolean {
+  return !!(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN) ||
+         !!(process.env.NEXT_PUBLIC_CLOUDFLARE_ACCOUNT_ID && process.env.NEXT_PUBLIC_CLOUDFLARE_API_TOKEN);
+}
+
+function hasStabilityConfig(): boolean {
+  return !!(process.env.STABILITY_API_KEY || process.env.NEXT_PUBLIC_STABILITY_API_KEY);
+}
+
+function hasReplicateConfig(): boolean {
+  return !!(process.env.REPLICATE_API_KEY || process.env.NEXT_PUBLIC_REPLICATE_API_KEY);
+}
+
+function hasZAIConfig(): boolean {
+  // Z.AI uses config file or env vars
+  return !!(process.env.ZAI_BASE_URL && process.env.ZAI_API_KEY);
 }
 
 // ===========================================
 // HUGGING FACE - FREE TIER
 // ===========================================
-// Free API for image generation
-// No credit card required
-// Limits: ~30 images/day for free tier
-// ===========================================
 
 async function generateWithHuggingFace(prompt: string): Promise<string | null> {
-  const apiKey = process.env.HUGGING_FACE_API_KEY || process.env.NEXT_PUBLIC_HUGGING_FACE_API_KEY;
-  
-  if (!apiKey) {
-    console.log('Hugging Face: No API key configured');
+  if (!hasHuggingFaceConfig()) {
     return null;
   }
 
+  const apiKey = process.env.HUGGING_FACE_API_KEY || process.env.NEXT_PUBLIC_HUGGING_FACE_API_KEY;
+
   try {
-    // Using Stable Diffusion XL model (free tier available)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
     const response = await fetch(
       'https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0',
       {
@@ -41,24 +64,19 @@ async function generateWithHuggingFace(prompt: string): Promise<string | null> {
         body: JSON.stringify({
           inputs: prompt,
           parameters: {
-            negative_prompt: 'blurry, bad quality, distorted, ugly, watermark, text overlay, signature',
-            num_inference_steps: 30,
-            guidance_scale: 7.5,
+            negative_prompt: 'blurry, bad quality, watermark',
             width: 1344,
             height: 768,
           },
         }),
+        signal: controller.signal,
       }
     );
 
+    clearTimeout(timeoutId);
+
     if (!response.ok) {
-      const error = await response.text();
-      console.log(`Hugging Face error: ${response.status} - ${error}`);
-      
-      // Model loading, retry later
-      if (response.status === 503) {
-        console.log('Hugging Face: Model loading, will retry...');
-      }
+      console.log(`Hugging Face error: ${response.status}`);
       return null;
     }
 
@@ -75,21 +93,19 @@ async function generateWithHuggingFace(prompt: string): Promise<string | null> {
 // ===========================================
 // CLOUDFLARE WORKERS AI - FREE TIER
 // ===========================================
-// Free: 10,000 images/month
-// No credit card required
-// Works globally with low latency
-// ===========================================
 
 async function generateWithCloudflare(prompt: string): Promise<string | null> {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || process.env.NEXT_PUBLIC_CLOUDFLARE_ACCOUNT_ID;
-  const apiToken = process.env.CLOUDFLARE_API_TOKEN || process.env.NEXT_PUBLIC_CLOUDFLARE_API_TOKEN;
-  
-  if (!accountId || !apiToken) {
-    console.log('Cloudflare: Not configured');
+  if (!hasCloudflareConfig()) {
     return null;
   }
 
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || process.env.NEXT_PUBLIC_CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN || process.env.NEXT_PUBLIC_CLOUDFLARE_API_TOKEN;
+
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
     const response = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/stabilityai/stable-diffusion-xl-base-1.0`,
       {
@@ -100,24 +116,24 @@ async function generateWithCloudflare(prompt: string): Promise<string | null> {
         },
         body: JSON.stringify({
           prompt: prompt,
-          negative_prompt: 'blurry, bad quality, distorted, watermark',
+          negative_prompt: 'blurry, bad quality, watermark',
           width: 1344,
           height: 768,
-          num_steps: 20,
         }),
+        signal: controller.signal,
       }
     );
 
+    clearTimeout(timeoutId);
+
     if (!response.ok) {
-      const error = await response.text();
-      console.log(`Cloudflare error: ${response.status} - ${error}`);
+      console.log(`Cloudflare error: ${response.status}`);
       return null;
     }
 
     const result = await response.json();
     
     if (result.result?.image) {
-      // Cloudflare returns base64 directly
       return `data:image/png;base64,${result.result.image}`;
     }
     
@@ -132,20 +148,18 @@ async function generateWithCloudflare(prompt: string): Promise<string | null> {
 // ===========================================
 // STABILITY AI - FREE CREDITS
 // ===========================================
-// Free credits on signup (150 images)
-// High quality generation
-// Requires API key from platform.stability.ai
-// ===========================================
 
 async function generateWithStability(prompt: string): Promise<string | null> {
-  const apiKey = process.env.STABILITY_API_KEY || process.env.NEXT_PUBLIC_STABILITY_API_KEY;
-  
-  if (!apiKey) {
-    console.log('Stability AI: No API key configured');
+  if (!hasStabilityConfig()) {
     return null;
   }
 
+  const apiKey = process.env.STABILITY_API_KEY || process.env.NEXT_PUBLIC_STABILITY_API_KEY;
+
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
     const response = await fetch(
       'https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image',
       {
@@ -153,12 +167,11 @@ async function generateWithStability(prompt: string): Promise<string | null> {
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
         },
         body: JSON.stringify({
           text_prompts: [
             { text: prompt, weight: 1 },
-            { text: 'blurry, bad quality, distorted, watermark, signature', weight: -1 },
+            { text: 'blurry, bad quality, watermark', weight: -1 },
           ],
           cfg_scale: 7,
           height: 768,
@@ -166,12 +179,14 @@ async function generateWithStability(prompt: string): Promise<string | null> {
           steps: 30,
           samples: 1,
         }),
+        signal: controller.signal,
       }
     );
 
+    clearTimeout(timeoutId);
+
     if (!response.ok) {
-      const error = await response.text();
-      console.log(`Stability AI error: ${response.status} - ${error}`);
+      console.log(`Stability AI error: ${response.status}`);
       return null;
     }
 
@@ -192,21 +207,18 @@ async function generateWithStability(prompt: string): Promise<string | null> {
 // ===========================================
 // REPLICATE - FREE CREDITS
 // ===========================================
-// Free credits on signup (~50 images)
-// Access to multiple models
-// Requires API key from replicate.com
-// ===========================================
 
 async function generateWithReplicate(prompt: string): Promise<string | null> {
-  const apiKey = process.env.REPLICATE_API_KEY || process.env.NEXT_PUBLIC_REPLICATE_API_KEY;
-  
-  if (!apiKey) {
-    console.log('Replicate: No API key configured');
+  if (!hasReplicateConfig()) {
     return null;
   }
 
+  const apiKey = process.env.REPLICATE_API_KEY || process.env.NEXT_PUBLIC_REPLICATE_API_KEY;
+
   try {
-    // Start prediction
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
     const startResponse = await fetch(
       'https://api.replicate.com/v1/predictions',
       {
@@ -219,37 +231,34 @@ async function generateWithReplicate(prompt: string): Promise<string | null> {
           version: 'stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b',
           input: {
             prompt: prompt,
-            negative_prompt: 'blurry, bad quality, distorted, watermark',
             width: 1344,
             height: 768,
-            num_inference_steps: 25,
           },
         }),
+        signal: controller.signal,
       }
     );
 
+    clearTimeout(timeoutId);
+
     if (!startResponse.ok) {
-      const error = await startResponse.text();
-      console.log(`Replicate start error: ${startResponse.status} - ${error}`);
+      console.log(`Replicate error: ${startResponse.status}`);
       return null;
     }
 
     const prediction = await startResponse.json();
     
-    // Poll for result (max 60 seconds)
+    // Poll for result (max 30 seconds)
     let result = prediction;
     let attempts = 0;
-    const maxAttempts = 30;
 
-    while (result.status !== 'succeeded' && result.status !== 'failed' && attempts < maxAttempts) {
+    while (result.status !== 'succeeded' && result.status !== 'failed' && attempts < 15) {
       await new Promise(resolve => setTimeout(resolve, 2000));
       
       const pollResponse = await fetch(
         `https://api.replicate.com/v1/predictions/${prediction.id}`,
         {
-          headers: {
-            'Authorization': `Token ${apiKey}`,
-          },
+          headers: { 'Authorization': `Token ${apiKey}` },
         }
       );
       
@@ -259,7 +268,6 @@ async function generateWithReplicate(prompt: string): Promise<string | null> {
     }
 
     if (result.status === 'succeeded' && result.output?.[0]) {
-      // Replicate returns a URL, we need to fetch and convert to base64
       const imageResponse = await fetch(result.output[0]);
       const imageBuffer = await imageResponse.arrayBuffer();
       const base64 = Buffer.from(imageBuffer).toString('base64');
@@ -275,42 +283,10 @@ async function generateWithReplicate(prompt: string): Promise<string | null> {
 }
 
 // ===========================================
-// Z.AI (Original) - For local/development
+// PLACEHOLDER GENERATOR (Always works)
 // ===========================================
 
-async function generateWithZAI(prompt: string): Promise<string | null> {
-  try {
-    const ZAI = (await import('z-ai-web-dev-sdk')).default;
-    const zai = await ZAI.create();
-    
-    const response = await zai.images.generations.create({
-      prompt,
-      size: '1344x768',
-    });
-
-    const imageBase64 = response.data[0]?.base64;
-    
-    if (imageBase64) {
-      return `data:image/png;base64,${imageBase64}`;
-    }
-    
-    return null;
-    
-  } catch (error) {
-    console.error('Z.AI error:', error);
-    return null;
-  }
-}
-
-// ===========================================
-// FALLBACK: Placeholder Image Generator
-// ===========================================
-// When no API is available, generate a placeholder
-// This ensures the app always works
-// ===========================================
-
-async function generatePlaceholder(prompt: string, title: string): Promise<string> {
-  // Create a canvas-like SVG placeholder with the title
+async function generatePlaceholder(title: string): Promise<string> {
   const colors = [
     ['#667eea', '#764ba2'],
     ['#f093fb', '#f5576c'],
@@ -321,33 +297,41 @@ async function generatePlaceholder(prompt: string, title: string): Promise<strin
   ];
   
   const randomColors = colors[Math.floor(Math.random() * colors.length)];
-  const encodedTitle = encodeURIComponent(title || 'Thumbnail');
+  const displayTitle = (title || 'Thumbnail').slice(0, 30);
   
-  // Use a free placeholder service with custom text
-  const placeholderUrl = `https://placehold.co/1344x768/${randomColors[0].replace('#', '')}/${randomColors[1].replace('#', '')}?text=${encodedTitle}&font=roboto`;
-  
+  // Try to get placeholder from placehold.co
   try {
-    const response = await fetch(placeholderUrl);
-    const imageBuffer = await response.arrayBuffer();
-    const base64 = Buffer.from(imageBuffer).toString('base64');
-    return `data:image/png;base64,${base64}`;
-  } catch {
-    // Return a data URL for a simple SVG
-    const svg = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="1344" height="768">
-        <defs>
-          <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" style="stop-color:${randomColors[0]};stop-opacity:1" />
-            <stop offset="100%" style="stop-color:${randomColors[1]};stop-opacity:1" />
-          </linearGradient>
-        </defs>
-        <rect width="100%" height="100%" fill="url(#grad)"/>
-        <text x="50%" y="45%" font-family="Arial, sans-serif" font-size="48" fill="white" text-anchor="middle" font-weight="bold">${title || 'Thumbnail'}</text>
-        <text x="50%" y="60%" font-family="Arial, sans-serif" font-size="24" fill="rgba(255,255,255,0.8)" text-anchor="middle">Configure API keys to generate real images</text>
-      </svg>
-    `;
-    return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+    const placeholderUrl = `https://placehold.co/1344x768/${randomColors[0].replace('#', '')}/${randomColors[1].replace('#', '')}?text=${encodeURIComponent(displayTitle)}&font=roboto`;
+    
+    const response = await fetch(placeholderUrl, { 
+      signal: AbortSignal.timeout(5000) 
+    });
+    
+    if (response.ok) {
+      const imageBuffer = await response.arrayBuffer();
+      const base64 = Buffer.from(imageBuffer).toString('base64');
+      return `data:image/png;base64,${base64}`;
+    }
+  } catch (e) {
+    console.log('Placeholder service unavailable, using SVG');
   }
+
+  // Fallback to SVG
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="1344" height="768" viewBox="0 0 1344 768">
+      <defs>
+        <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:${randomColors[0]};stop-opacity:1" />
+          <stop offset="100%" style="stop-color:${randomColors[1]};stop-opacity:1" />
+        </linearGradient>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#grad)"/>
+      <text x="50%" y="45%" font-family="Arial, sans-serif" font-size="64" fill="white" text-anchor="middle" font-weight="bold">${displayTitle}</text>
+      <text x="50%" y="60%" font-family="Arial, sans-serif" font-size="24" fill="rgba(255,255,255,0.7)" text-anchor="middle">Demo Mode - Add API keys for real images</text>
+    </svg>
+  `;
+  
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
 }
 
 // ===========================================
@@ -360,35 +344,33 @@ export const imageProviders: ImageProvider[] = [
     enabled: true,
     priority: 1,
     generate: generateWithCloudflare,
+    hasConfig: hasCloudflareConfig,
   },
   {
     name: 'Hugging Face',
     enabled: true,
     priority: 2,
     generate: generateWithHuggingFace,
+    hasConfig: hasHuggingFaceConfig,
   },
   {
     name: 'Stability AI',
     enabled: true,
     priority: 3,
     generate: generateWithStability,
+    hasConfig: hasStabilityConfig,
   },
   {
     name: 'Replicate',
     enabled: true,
     priority: 4,
     generate: generateWithReplicate,
-  },
-  {
-    name: 'Z.AI',
-    enabled: true,
-    priority: 5,
-    generate: generateWithZAI,
+    hasConfig: hasReplicateConfig,
   },
 ];
 
 // ===========================================
-// HYBRID GENERATION FUNCTION
+// MAIN GENERATION FUNCTION
 // ===========================================
 
 export async function generateImageWithFallback(prompt: string, title: string): Promise<{
@@ -396,13 +378,26 @@ export async function generateImageWithFallback(prompt: string, title: string): 
   provider: string;
   success: boolean;
 }> {
-  // Sort providers by priority
-  const sortedProviders = [...imageProviders]
-    .filter(p => p.enabled)
+  // Filter only providers that have configuration
+  const configuredProviders = imageProviders
+    .filter(p => p.enabled && p.hasConfig())
     .sort((a, b) => a.priority - b.priority);
 
-  // Try each provider in order
-  for (const provider of sortedProviders) {
+  console.log(`Configured providers: ${configuredProviders.map(p => p.name).join(', ') || 'None'}`);
+
+  // If no providers configured, go straight to placeholder
+  if (configuredProviders.length === 0) {
+    console.log('No providers configured, generating placeholder');
+    const placeholderImage = await generatePlaceholder(title);
+    return {
+      image: placeholderImage,
+      provider: 'Demo Mode',
+      success: true, // Return true so UI shows the placeholder
+    };
+  }
+
+  // Try each configured provider
+  for (const provider of configuredProviders) {
     console.log(`Trying provider: ${provider.name}`);
     
     try {
@@ -421,14 +416,14 @@ export async function generateImageWithFallback(prompt: string, title: string): 
     }
   }
 
-  // If all providers fail, generate a placeholder
+  // All providers failed, generate placeholder
   console.log('All providers failed, generating placeholder');
-  const placeholderImage = await generatePlaceholder(prompt, title);
+  const placeholderImage = await generatePlaceholder(title);
   
   return {
     image: placeholderImage,
-    provider: 'Placeholder',
-    success: false,
+    provider: 'Fallback',
+    success: true,
   };
 }
 
@@ -437,13 +432,20 @@ export async function generateImageWithFallback(prompt: string, title: string): 
 // ===========================================
 
 export async function checkProvidersStatus(): Promise<Record<string, boolean>> {
-  const status: Record<string, boolean> = {};
-  
-  // Check if API keys are configured
-  status['Cloudflare Workers AI'] = !!(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN);
-  status['Hugging Face'] = !!process.env.HUGGING_FACE_API_KEY;
-  status['Stability AI'] = !!process.env.STABILITY_API_KEY;
-  status['Replicate'] = !!process.env.REPLICATE_API_KEY;
-  
-  return status;
+  return {
+    'Cloudflare Workers AI': hasCloudflareConfig(),
+    'Hugging Face': hasHuggingFaceConfig(),
+    'Stability AI': hasStabilityConfig(),
+    'Replicate': hasReplicateConfig(),
+  };
+}
+
+// ===========================================
+// Get list of configured providers
+// ===========================================
+
+export function getConfiguredProviders(): string[] {
+  return imageProviders
+    .filter(p => p.hasConfig())
+    .map(p => p.name);
 }
